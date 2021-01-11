@@ -83,7 +83,7 @@ class RelayManager {
       + 4 * empty calldata bytes
       + 50k buffer
     */
-    const gas = gasLimit + 21000 + nonZeros * 16 + zeros * 4 + 50000;
+    const gas = gasLimit + 21000 + nonZeros * 16 + zeros * 4 + 72000;
 
     const tx = await this.relayerManager.execute(
       _wallet.address,
