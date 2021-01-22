@@ -22,7 +22,6 @@ import "./base/Owned.sol";
 import "./base/Managed.sol";
 import "./storage/IGuardianStorage.sol";
 import "./IModuleRegistry.sol";
-import "../modules/common/IVersionManager.sol";
 
 /**
  * @title WalletFactory
@@ -63,23 +62,21 @@ contract WalletFactory is Owned, Managed {
      * The wallet is initialised with the version manager module, a version number and a first guardian.
      * The wallet is created using the CREATE opcode.
      * @param _owner The account address.
-     * @param _versionManager The version manager module
+     * @param _modules The version manager module
      * @param _guardian The guardian address.
-     * @param _version The version of the feature bundle.
      */
     function createWallet(
         address _owner,
-        address _versionManager,
-        address _guardian,
-        uint256 _version
+        address[] calldata _modules,
+        address _guardian
     )
         external
         onlyManager
     {
-        validateInputs(_owner, _versionManager, _guardian, _version);
+        validateInputs(_owner, _modules, _guardian);
         Proxy proxy = new Proxy(walletImplementation);
         address payable wallet = address(proxy);
-        configureWallet(BaseWallet(wallet), _owner, _versionManager, _guardian, _version);
+        configureWallet(BaseWallet(wallet), _owner, _modules, _guardian);
     }
      
     /**
@@ -87,52 +84,48 @@ contract WalletFactory is Owned, Managed {
      * The wallet is initialised with the version manager module, the version number and a first guardian.
      * The wallet is created using the CREATE2 opcode.
      * @param _owner The account address.
-     * @param _versionManager The version manager module
+     * @param _modules The version manager module
      * @param _guardian The guardian address.
      * @param _salt The salt.
-     * @param _version The version of the feature bundle.
      */
     function createCounterfactualWallet(
         address _owner,
-        address _versionManager,
+        address[] calldata _modules,
         address _guardian,
-        bytes32 _salt,
-        uint256 _version
+        bytes32 _salt
     )
         external
         onlyManager
         returns (address _wallet)
     {
-        validateInputs(_owner, _versionManager, _guardian, _version);
-        bytes32 newsalt = newSalt(_salt, _owner, _versionManager, _guardian, _version);
+        validateInputs(_owner, _modules, _guardian);
+        bytes32 newsalt = newSalt(_salt, _owner, _modules, _guardian);
         Proxy proxy = new Proxy{salt: newsalt}(walletImplementation);
         address payable wallet = address(proxy);
-        configureWallet(BaseWallet(wallet), _owner, _versionManager, _guardian, _version);
+        configureWallet(BaseWallet(wallet), _owner, _modules, _guardian);
         return wallet;
     }
 
     /**
      * @notice Gets the address of a counterfactual wallet with a first default guardian.
      * @param _owner The account address.
-     * @param _versionManager The version manager module
+     * @param _modules The version manager module
      * @param _guardian The guardian address.
      * @param _salt The salt.
-     * @param _version The version of feature bundle.
      * @return _wallet The address that the wallet will have when created using CREATE2 and the same input parameters.
      */
     function getAddressForCounterfactualWallet(
         address _owner,
-        address _versionManager,
+        address[] calldata _modules,
         address _guardian,
-        bytes32 _salt,
-        uint256 _version
+        bytes32 _salt
     )
         external
         view
         returns (address _wallet)
     {
-        validateInputs(_owner, _versionManager, _guardian, _version);
-        bytes32 newsalt = newSalt(_salt, _owner, _versionManager, _guardian, _version);
+        validateInputs(_owner, _modules, _guardian);
+        bytes32 newsalt = newSalt(_salt, _owner, _modules, _guardian);
         bytes memory code = abi.encodePacked(type(Proxy).creationCode, uint256(walletImplementation));
         bytes32 hash = keccak256(abi.encodePacked(bytes1(0xff), address(this), newsalt, keccak256(code)));
         _wallet = address(uint160(uint256(hash)));
@@ -163,32 +156,29 @@ contract WalletFactory is Owned, Managed {
      * @notice Helper method to configure a wallet for a set of input parameters.
      * @param _wallet The target wallet
      * @param _owner The account address.
-     * @param _versionManager The version manager module
+     * @param _modules The version manager module
      * @param _guardian The guardian address.
-     * @param _version The version of the feature bundle.
      */
     function configureWallet(
         BaseWallet _wallet,
         address _owner,
-        address _versionManager,
-        address _guardian,
-        uint256 _version
+        address[] calldata _modules,
+        address _guardian
     )
         internal
     {
         // add the factory to modules so it can add a guardian and upgrade the wallet to the required version
-        address[] memory extendedModules = new address[](2);
-        extendedModules[0] = _versionManager;
-        extendedModules[1] = address(this);
+        address[] memory extendedModules = new address[](_modules.length + 1);
+        extendedModules[0] = address(this);
+        for (uint i = 0; i < _modules.length; i++) {
+            extendedModules[i + 1] = _modules[i];
+        }
 
         // initialise the wallet with the owner and the extended modules
         _wallet.init(_owner, extendedModules);
 
         // add guardian
         IGuardianStorage(guardianStorage).addGuardian(address(_wallet), _guardian);
-
-        // upgrade the wallet
-        IVersionManager(_versionManager).upgradeWallet(address(_wallet), _version);
 
         // remove the factory from the authorised modules
         _wallet.authoriseModule(address(this), false);
@@ -201,25 +191,23 @@ contract WalletFactory is Owned, Managed {
      * @notice Generates a new salt based on a provided salt, an owner, a list of modules and an optional guardian.
      * @param _salt The slat provided.
      * @param _owner The owner address.
-     * @param _versionManager The version manager module
+     * @param _modules The version manager module
      * @param _guardian The guardian address.
-     * @param _version The version of feature bundle
      */
-    function newSalt(bytes32 _salt, address _owner, address _versionManager, address _guardian, uint256 _version) internal pure returns (bytes32) {
-        return keccak256(abi.encodePacked(_salt, _owner, _versionManager, _guardian, _version));
+    function newSalt(bytes32 _salt, address _owner, address[] calldata _modules, address _guardian) internal pure returns (bytes32) {
+        return keccak256(abi.encodePacked(_salt, _owner, _modules, _guardian));
     }
 
     /**
      * @notice Throws if the owner, guardian, version or version manager is invalid.
      * @param _owner The owner address.
-     * @param _versionManager The version manager module
+     * @param _modules The version manager module
      * @param _guardian The guardian address
-     * @param _version The version of feature bundle
      */
-    function validateInputs(address _owner, address _versionManager, address _guardian, uint256 _version) internal view {
+    function validateInputs(address _owner, address[] calldata _modules, address _guardian) internal view {
         require(_owner != address(0), "WF: owner cannot be null");
-        require(IModuleRegistry(moduleRegistry).isRegisteredModule(_versionManager), "WF: invalid _versionManager");
+        require(_modules.length > 0, "WF: cannot assign with less than 1 module");
+        require(IModuleRegistry(moduleRegistry).isRegisteredModule(_modules), "WF: one or more modules are not registered");
         require(_guardian != (address(0)), "WF: guardian cannot be null");
-        require(_version > 0, "WF: invalid _version");
     }
 }
